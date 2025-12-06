@@ -27,19 +27,19 @@ type Group struct {
 
 // Message represents a chat message
 type Message struct {
-	ID        int64  `gorm:"primaryKey;autoIncrement" json:"database_id"` // Local DB ID
-	MessageID int32  `gorm:"uniqueIndex" json:"message_id"`              // OneBot Message ID
-	Type      string `json:"message_type"`                                // "private" or "group"
-	SubType   string `json:"sub_type"`                                    // "friend", "normal", "anonymous", "notice"
-	SenderID  int64  `json:"sender_id"`
-	Sender    User   `gorm:"foreignKey:SenderID;references:ID" json:"sender"`
-	TargetID  int64  `json:"target_id"`                                     // Receiver ID for private messages
-	GroupID   int64  `json:"group_id"`                                      // 0 for private messages
-	Group     Group  `gorm:"foreignKey:GroupID;references:ID" json:"group"` // Optional
-	Content   string `json:"content"`                                       // Simplified text used for previews/search
-	Raw       string `json:"raw_message"`                                   // Full raw CQ code
-	Elements  MessageElements `gorm:"type:TEXT" json:"elements,omitempty"` // Structured elements for rendering (text/image/voice/...)
-	ReplyTo   int32           `json:"reply_to,omitempty"`                   // Reply target message_id if any
+	ID        int64           `gorm:"primaryKey;autoIncrement" json:"database_id"` // Local DB ID
+	MessageID int32           `gorm:"uniqueIndex" json:"message_id"`               // OneBot Message ID
+	Type      string          `json:"message_type"`                                // "private" or "group"
+	SubType   string          `json:"sub_type"`                                    // "friend", "normal", "anonymous", "notice"
+	SenderID  int64           `json:"sender_id"`
+	Sender    User            `gorm:"foreignKey:SenderID;references:ID" json:"sender"`
+	TargetID  int64           `json:"target_id"`                                     // Receiver ID for private messages
+	GroupID   int64           `json:"group_id"`                                      // 0 for private messages
+	Group     Group           `gorm:"foreignKey:GroupID;references:ID" json:"group"` // Optional
+	Content   string          `json:"content"`                                       // Simplified text used for previews/search
+	Raw       string          `json:"raw_message"`                                   // Full raw CQ code
+	Elements  MessageElements `gorm:"type:TEXT" json:"elements,omitempty"`           // Structured elements for rendering (text/image/voice/...)
+	ReplyTo   int32           `json:"reply_to,omitempty"`                            // Reply target message_id if any
 	Timestamp int64           `json:"time"`
 	IsSend    bool            `json:"is_send"` // True if sent by self
 	IsRead    bool            `json:"is_read"`
@@ -101,4 +101,15 @@ type UnreadSummary struct {
 	ChatID  int64 `json:"chat_id"`
 	IsGroup bool  `json:"is_group"`
 	Count   int64 `json:"count"`
+}
+
+// ChatSession describes a chat preview used for the sidebar.
+type ChatSession struct {
+	ChatID      int64  `json:"chat_id"`
+	IsGroup     bool   `json:"is_group"`
+	Name        string `json:"name"`
+	Avatar      string `json:"avatar"`
+	LastMessage string `json:"last_message"`
+	Time        int64  `json:"time"`
+	Unread      int64  `json:"unread"`
 }

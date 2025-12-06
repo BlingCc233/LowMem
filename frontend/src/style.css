@@ -31,7 +31,6 @@ body {
   background: var(--panel-bg);
   border: var(--border-width) solid var(--border-color);
   box-shadow: var(--shadow-X) var(--shadow-Y) 0px 0px var(--border-color);
-  transition: all 0.1s ease;
 }
 
 

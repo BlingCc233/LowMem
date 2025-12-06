@@ -103,6 +103,11 @@ const closeContextMenu = () => {
     contextMenu.value.visible = false
 }
 
+const handleDocumentClick = (event: MouseEvent) => {
+    if (event.button === 2) return
+    closeContextMenu()
+}
+
 const recallMsg = async () => {
     if (contextMenu.value.msg?.is_send) {
         await RecallMessage(contextMenu.value.msg.message_id)
@@ -125,6 +130,7 @@ const mention = (msg: Message) => {
 }
 
 const forwardMsg = (msg: Message) => {
+    if (!msg.database_id) return
     const target = prompt('输入聊天ID，群聊请以 g 前缀，例如 g123456')
     if (!target) return
     const isGroup = target.startsWith('g') || target.startsWith('G')
@@ -157,11 +163,11 @@ const scrollToMessage = (messageId: number) => {
 }
 
 onMounted(() => {
-    document.addEventListener('click', closeContextMenu)
+    document.addEventListener('click', handleDocumentClick)
 })
 
 onUnmounted(() => {
-    document.removeEventListener('click', closeContextMenu)
+    document.removeEventListener('click', handleDocumentClick)
 })
 </script>
 
@@ -262,28 +268,7 @@ onUnmounted(() => {
           <div class="menu-item" v-if="contextMenu.msg?.is_send" @click="recallMsg">撤回</div>
       </div>
   </div>
-</template>
-
-<style scoped>
-/* existing styles ... */
-/* Add toolbar style */
-.toolbar {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 4px;
-}
-.icon-btn {
-    background: none;
-    border: none;
-    cursor: pointer;
-    font-size: 1.2rem;
-    padding: 4px;
-    border-radius: 4px;
-}
-.icon-btn:hover {
-    background: #eee;
-}
-
+ </template>
 
 <style scoped>
 .chat-window {
@@ -489,6 +474,23 @@ onUnmounted(() => {
     font-weight: 800;
     cursor: pointer;
     color: var(--accent-color);
+}
+
+.toolbar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+.icon-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1.2rem;
+    padding: 4px;
+    border-radius: 4px;
+}
+.icon-btn:hover {
+    background: #eee;
 }
 
 .at-tag {

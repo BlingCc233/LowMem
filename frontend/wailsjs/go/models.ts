@@ -167,10 +167,10 @@ export namespace models {
 		}
 	}
 	
-	export class UnreadSummary {
-	    chat_id: number;
-	    is_group: boolean;
-	    count: number;
+export class UnreadSummary {
+    chat_id: number;
+    is_group: boolean;
+    count: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new UnreadSummary(source);
@@ -178,11 +178,35 @@ export namespace models {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.chat_id = source["chat_id"];
-	        this.is_group = source["is_group"];
-	        this.count = source["count"];
-	    }
-	}
-
+        this.chat_id = source["chat_id"];
+        this.is_group = source["is_group"];
+        this.count = source["count"];
+    }
 }
 
+export class ChatSession {
+    chat_id: number;
+    is_group: boolean;
+    name: string;
+    avatar: string;
+    last_message: string;
+    time: number;
+    unread: number;
+
+    static createFrom(source: any = {}) {
+        return new ChatSession(source);
+    }
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.chat_id = source["chat_id"];
+        this.is_group = source["is_group"];
+        this.name = source["name"];
+        this.avatar = source["avatar"];
+        this.last_message = source["last_message"];
+        this.time = source["time"];
+        this.unread = source["unread"];
+    }
+}
+
+}

@@ -274,6 +274,11 @@ func (b *Backend) GetMessages(id int64, isGroup bool) ([]models.Message, error) 
 	return db.GetMessages(id, isGroup, 0, 50)
 }
 
+// GetSessions returns aggregated chat previews for the sidebar.
+func (b *Backend) GetSessions() ([]models.ChatSession, error) {
+	return db.GetSessionSummaries(64)
+}
+
 // SendMessage sends a message
 func (b *Backend) SendMessage(targetID int64, isGroup bool, content string) (*models.Message, error) {
 	if b.client == nil || (!b.client.IsConnected() && !b.client.IsHTTPAvailable()) {
@@ -439,13 +444,13 @@ func segmentsToModelElements(segments []napcat.MessageSegment) models.MessageEle
 		}
 		// Try to find URL in "url" or "file"
 		if url, ok := seg.Data["url"].(string); ok {
-			elem.URL = url
+			elem.URL = resolveMediaURL(url)
 		}
 		if file, ok := seg.Data["file"].(string); ok {
 			elem.File = file
 			// If URL is missing but File is a URL, use it
-			if elem.URL == "" && (strings.HasPrefix(file, "http") || strings.HasPrefix(file, "https")) {
-				elem.URL = file
+			if elem.URL == "" {
+				elem.URL = resolveMediaURL(file)
 			}
 		}
 
@@ -516,6 +521,25 @@ func parseMessageSegments(raw json.RawMessage) models.MessageElements {
 	}
 
 	return nil
+}
+
+func resolveMediaURL(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "http://") ||
+		strings.HasPrefix(value, "https://") ||
+		strings.HasPrefix(value, "file://") ||
+		strings.HasPrefix(value, "data:") {
+		return value
+	}
+
+	cleaned := filepath.ToSlash(value)
+	if strings.HasPrefix(cleaned, "/") {
+		return "file://" + cleaned
+	}
+	return "file:///" + cleaned
 }
 
 // RecallMessage recalls a message
