@@ -18,6 +18,10 @@ export function GetMessages(arg1, arg2) {
   return window['go']['backend']['Backend']['GetMessages'](arg1, arg2);
 }
 
+export function GetOneBotMessage(arg1) {
+  return window['go']['backend']['Backend']['GetOneBotMessage'](arg1);
+}
+
 export function GetSelfInfo() {
   return window['go']['backend']['Backend']['GetSelfInfo']();
 }

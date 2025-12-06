@@ -21,6 +21,10 @@ const messageMap = computed(() => {
     store.searchResults.forEach((m) => {
         map[m.message_id] = m
     })
+    for (const k in store.referencedMessages) {
+        const id = Number(k)
+        map[id] = store.referencedMessages[id]
+    }
     return map
 })
 
@@ -35,6 +39,14 @@ const scrollToBottom = () => {
 watch(() => store.messages.length, () => {
     scrollToBottom()
 })
+
+watch(() => store.messages, (msgs) => {
+    msgs.forEach(msg => {
+        if (msg.reply_to && !messageMap.value[msg.reply_to]) {
+            store.fetchMessage(msg.reply_to)
+        }
+    })
+}, { deep: true, immediate: true })
 
 watch(() => store.currentChat, () => {
     replyTo.value = null
@@ -120,7 +132,7 @@ const send = () => {
 const handlePaste = async (e: ClipboardEvent) => {
     const items = e.clipboardData?.items
     if (!items) return
-    for (const item of items) {
+    for (const item of Array.from(items)) {
         if (item.type.indexOf('image') !== -1) {
             const file = item.getAsFile()
             if (!file) continue
@@ -152,7 +164,7 @@ const handleDrop = async (e: DragEvent) => {
     const files = e.dataTransfer?.files
     if (!files || files.length === 0) return
     
-    for (const file of files) {
+    for (const file of Array.from(files)) {
         if (file.type.startsWith('image/')) {
              // For drag and drop from OS, we might get actual file path if we were in Electron, but in Browser/Wails we get a File object.
              // Wails 3 might handle native drag easier, but wails 2 usually gives File object.
@@ -353,7 +365,7 @@ onUnmounted(() => {
               <button class="link-btn" @click="replyTo = null">取消</button>
           </div>
           <div class="toolbar">
-             <button @click="sendImage" class="icon-btn">📷</button>
+             <!-- <button @click="sendImage" class="icon-btn">📷</button> -->
           </div>
           <input 
             v-model="inputContent" 

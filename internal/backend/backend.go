@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -274,6 +275,11 @@ func (b *Backend) GetMessages(id int64, isGroup bool) ([]models.Message, error) 
 	return db.GetMessages(id, isGroup, 0, 50)
 }
 
+// GetOneBotMessage returns a single message by its OneBot ID
+func (b *Backend) GetOneBotMessage(messageID int32) (*models.Message, error) {
+	return db.GetMessageByOneBotID(messageID)
+}
+
 // GetSessions returns aggregated chat previews for the sidebar.
 func (b *Backend) GetSessions() ([]models.ChatSession, error) {
 	return db.GetSessionSummaries(64)
@@ -506,6 +512,18 @@ func segmentsToModelElements(client *napcat.Client, segments []napcat.MessageSeg
 	return result
 }
 
+func logToFile(format string, v ...interface{}) {
+	f, err := os.OpenFile("/Users/ccbling/.gemini/antigravity/brain/35a0385d-575e-45f0-a060-cbade2a9ea12/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	entry := fmt.Sprintf(time.Now().Format(time.RFC3339)+" "+format+"\n", v...)
+	if _, err := f.WriteString(entry); err != nil {
+		// ignore
+	}
+}
+
 func (b *Backend) parseMessageSegments(raw json.RawMessage) models.MessageElements {
 	// Try to parse as array of segments first
 	var segments []map[string]interface{}
@@ -539,7 +557,16 @@ func (b *Backend) parseMessageSegments(raw json.RawMessage) models.MessageElemen
 			if (elem.Type == "image" || elem.Type == "record") && elem.URL == "" && elem.File != "" && b.client != nil {
 				// Only fetch if it doesn't look like a URL or local path we already have
 				if !strings.HasPrefix(elem.File, "http") && !strings.HasPrefix(elem.File, "data:") {
-					if info, err := b.client.GetImage(elem.File); err == nil && info.Url != "" {
+					info, err := b.client.GetImage(elem.File)
+					if err != nil {
+						logToFile("GetImage failed for %s: %v", elem.File, err)
+						log.Printf("GetImage failed for %s: %v", elem.File, err)
+					} else if info.Url == "" {
+						logToFile("GetImage returned empty URL for %s", elem.File)
+						log.Printf("GetImage returned empty URL for %s", elem.File)
+					} else {
+						logToFile("GetImage success for %s: %s", elem.File, info.Url)
+						// log.Printf("GetImage success for %s: %s", elem.File, info.Url)
 						elem.URL = resolveMediaURL(info.Url)
 					}
 				}
@@ -595,23 +622,107 @@ func (b *Backend) parseMessageSegments(raw json.RawMessage) models.MessageElemen
 	return nil
 }
 
+func downloadAndToBase64(url string) string {
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Printf("Failed to create request for %s: %v", url, err)
+		return url
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		logToFile("Failed to download media %s: %v", url, err)
+		log.Printf("Failed to download media %s: %v", url, err)
+		return url
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		logToFile("Failed to download media %s: status %d", url, resp.StatusCode)
+		log.Printf("Failed to download media %s: status %d", url, resp.StatusCode)
+		return url
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logToFile("Failed to read media body %s: %v", url, err)
+		log.Printf("Failed to read media body %s: %v", url, err)
+		return url
+	}
+
+	mime := resp.Header.Get("Content-Type")
+	if mime == "" {
+		mime = "application/octet-stream"
+	}
+
+	b64 := base64.StdEncoding.EncodeToString(data)
+	return fmt.Sprintf("data:%s;base64,%s", mime, b64)
+}
+
 func resolveMediaURL(raw string) string {
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		return ""
 	}
-	if strings.HasPrefix(value, "http://") ||
-		strings.HasPrefix(value, "https://") ||
-		strings.HasPrefix(value, "file://") ||
-		strings.HasPrefix(value, "data:") {
+	if strings.HasPrefix(value, "data:") {
 		return value
 	}
 
-	cleaned := filepath.ToSlash(value)
-	if strings.HasPrefix(cleaned, "/") {
-		return "file://" + cleaned
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		return downloadAndToBase64(value)
 	}
-	return "file:///" + cleaned
+
+	// It's a local file (file:// or path)
+	// We need to convert it to base64 data URI because Wails dev server cannot access local files directly
+	path := value
+	if strings.HasPrefix(path, "file:///") {
+		path = path[8:]
+	} else if strings.HasPrefix(path, "file://") {
+		path = path[7:]
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// If read fails, fall back to returning the path as is (maybe Wails can handle it in build?)
+		// But for now return file:// scheme so <img src> at least tries
+		if strings.HasPrefix(value, "file://") {
+			return value
+		}
+		cleaned := filepath.ToSlash(value)
+		if strings.HasPrefix(cleaned, "/") {
+			return "file://" + cleaned
+		}
+		return "file:///" + cleaned
+	}
+
+	// Detect mime type
+	ext := strings.ToLower(filepath.Ext(path))
+	mime := "application/octet-stream"
+	switch ext {
+	case ".png":
+		mime = "image/png"
+	case ".jpg", ".jpeg":
+		mime = "image/jpeg"
+	case ".gif":
+		mime = "image/gif"
+	case ".webp":
+		mime = "image/webp"
+	case ".amr":
+		mime = "audio/amr"
+	case ".mp3":
+		mime = "audio/mp3"
+	case ".wav":
+		mime = "audio/wav"
+	case ".silk":
+		mime = "audio/silk" // Browsers can't play silk natively usually, but maybe using a decoder lib?
+	}
+
+	b64 := base64.StdEncoding.EncodeToString(data)
+	return fmt.Sprintf("data:%s;base64,%s", mime, b64)
 }
 
 // RecallMessage recalls a message

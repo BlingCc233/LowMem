@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type { User, Group, Message, Session } from '../types'
 // @ts-ignore
-import { GetFriends, GetGroups, GetMessages, SendMessage, ForwardMessage, SearchMessages, MarkChatRead, GetSessions } from '../../wailsjs/go/backend/Backend'
+import { GetFriends, GetGroups, GetMessages, SendMessage, ForwardMessage, SearchMessages, MarkChatRead, GetSessions, GetOneBotMessage } from '../../wailsjs/go/backend/Backend'
 // @ts-ignore
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 
@@ -46,6 +46,7 @@ export const useChatStore = defineStore('chat', () => {
     const messages = ref<Message[]>([])
     const loadingMessages = ref(false)
     const searchResults = ref<Message[]>([])
+    const referencedMessages = ref<Record<number, Message>>({})
     const sessions = ref<Record<string, Session>>({})
     const sessionSearch = ref('')
     const pinnedChats = ref<string[]>(loadPinnedChats())
@@ -170,17 +171,17 @@ export const useChatStore = defineStore('chat', () => {
     const loadSessionSummaries = async () => {
         try {
             const list = await GetSessions()
-            ;(list as any[]).forEach((item) => {
-                updateSession({
-                    id: item.chat_id,
-                    isGroup: item.is_group,
-                    name: item.name,
-                    avatar: item.avatar,
-                    lastMessage: item.last_message,
-                    time: item.time || 0,
-                    unread: item.unread ?? 0,
+                ; (list as any[]).forEach((item) => {
+                    updateSession({
+                        id: item.chat_id,
+                        isGroup: item.is_group,
+                        name: item.name,
+                        avatar: item.avatar,
+                        lastMessage: item.last_message,
+                        time: item.time || 0,
+                        unread: item.unread ?? 0,
+                    })
                 })
-            })
         } catch (e) {
             console.error('Failed to load chat summaries', e)
         }
@@ -320,6 +321,24 @@ export const useChatStore = defineStore('chat', () => {
         sessionSearch.value = ''
     }
 
+    const fetchMessage = async (messageID: number) => {
+        if (referencedMessages.value[messageID]) return referencedMessages.value[messageID]
+        // Check if in main messages
+        const found = messages.value.find(m => m.message_id === messageID)
+        if (found) return found
+
+        try {
+            const res = await GetOneBotMessage(messageID)
+            if (res) {
+                referencedMessages.value[messageID] = res as unknown as Message
+                return res as unknown as Message
+            }
+        } catch (e) {
+            console.error('Failed to fetch message', messageID, e)
+        }
+        return null
+    }
+
     return {
         friends,
         groups,
@@ -327,6 +346,7 @@ export const useChatStore = defineStore('chat', () => {
         messages,
         loadingMessages,
         searchResults,
+        referencedMessages,
         sessionSearch,
         orderedSessions,
         initSessions,
@@ -338,5 +358,6 @@ export const useChatStore = defineStore('chat', () => {
         togglePin,
         isPinned,
         clearSessionSearch,
+        fetchMessage,
     }
 })

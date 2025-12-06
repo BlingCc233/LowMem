@@ -59,6 +59,15 @@ func SaveMessage(msg *models.Message) error {
 	return DB.Create(msg).Error
 }
 
+func GetMessageByOneBotID(messageID int32) (*models.Message, error) {
+	var msg models.Message
+	res := DB.Preload("Sender").Preload("Group").Where("message_id = ?", messageID).First(&msg)
+	if res.Error != nil {
+		return nil, res.Error
+	}
+	return &msg, nil
+}
+
 func GetMessageByDatabaseID(id int64) (*models.Message, error) {
 	var msg models.Message
 	res := DB.Preload("Sender").Preload("Group").First(&msg, id)
