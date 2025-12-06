@@ -110,7 +110,7 @@ func (b *Backend) handlePrivateMessage(e *napcat.PrivateMessageEvent) {
 	}
 	isSelf := e.UserID == selfID
 
-	elements := parseMessageSegments(e.Message)
+	elements := b.parseMessageSegments(e.Message)
 
 	msg := &models.Message{
 		MessageID: e.MessageID,
@@ -159,7 +159,7 @@ func (b *Backend) handleGroupMessage(e *napcat.GroupMessageEvent) {
 		senderName = e.Sender.Card
 	}
 
-	elements := parseMessageSegments(e.Message)
+	elements := b.parseMessageSegments(e.Message)
 
 	msg := &models.Message{
 		MessageID: e.MessageID,
@@ -327,7 +327,7 @@ func (b *Backend) SendMessage(targetID int64, isGroup bool, content string) (*mo
 		GroupID:   groupID,
 		Content:   content,
 		Raw:       content,
-		Elements:  segmentsToModelElements(segments),
+		Elements:  segmentsToModelElements(b.client, segments),
 		Timestamp: time.Now().Unix(),
 		IsSend:    true,
 		IsRead:    true,
@@ -435,10 +435,13 @@ func parseCQCode(content string) []napcat.MessageSegment {
 	return segments
 }
 
-func segmentsToModelElements(segments []napcat.MessageSegment) models.MessageElements {
+func segmentsToModelElements(client *napcat.Client, segments []napcat.MessageSegment) models.MessageElements {
 	result := make(models.MessageElements, 0, len(segments))
 	for _, seg := range segments {
 		elem := models.MessageElement{Type: seg.Type}
+		if elem.Type == "record" {
+			elem.Type = "voice"
+		}
 		if text, ok := seg.Data["text"].(string); ok {
 			elem.Text = text
 		}
@@ -448,9 +451,18 @@ func segmentsToModelElements(segments []napcat.MessageSegment) models.MessageEle
 		}
 		if file, ok := seg.Data["file"].(string); ok {
 			elem.File = file
-			// If URL is missing but File is a URL, use it
+			// If URL is missing, decide how to resolve based on type and available helpers.
 			if elem.URL == "" {
-				elem.URL = resolveMediaURL(file)
+				// For image segments we can usually resolve via NapCat's get_image API.
+				if elem.Type == "image" && client != nil && (client.IsConnected() || client.IsHTTPAvailable()) {
+					if info, err := client.GetImage(file); err == nil && info.Url != "" {
+						elem.URL = resolveMediaURL(info.Url)
+					}
+				}
+				// Fallback: treat the file as a path/URL directly.
+				if elem.URL == "" {
+					elem.URL = resolveMediaURL(file)
+				}
 			}
 		}
 
@@ -458,16 +470,43 @@ func segmentsToModelElements(segments []napcat.MessageSegment) models.MessageEle
 			elem.QQ = fmt.Sprintf("%v", qq)
 		}
 		if id, ok := seg.Data["id"]; ok {
-			if idInt, ok := id.(int32); ok {
-				elem.ReplyID = idInt
+			// Different segment types reuse the key "id" for different meanings.
+			// - reply: reply target message id
+			// - face:  emoji id
+			var idVal int32
+			switch v := id.(type) {
+			case int32:
+				idVal = v
+			case int64:
+				idVal = int32(v)
+			case int:
+				idVal = int32(v)
+			case float64:
+				idVal = int32(v)
+			}
+			if idVal != 0 {
+				switch elem.Type {
+				case "reply":
+					elem.ReplyID = idVal
+				case "face":
+					elem.ID = idVal
+				}
 			}
 		}
+		// If it's an image but has no URL, it's broken. Do not add to elements, or add fallback.
+		// Front-end renders empty src as broken image/border.
+		if elem.Type == "image" && elem.URL == "" {
+			// Fallback: show text indicating failure instead of empty bubble
+			elem.Type = "text"
+			elem.Text = "[图片加载失败]"
+		}
+
 		result = append(result, elem)
 	}
 	return result
 }
 
-func parseMessageSegments(raw json.RawMessage) models.MessageElements {
+func (b *Backend) parseMessageSegments(raw json.RawMessage) models.MessageElements {
 	// Try to parse as array of segments first
 	var segments []map[string]interface{}
 	if err := json.Unmarshal(raw, &segments); err == nil {
@@ -479,6 +518,9 @@ func parseMessageSegments(raw json.RawMessage) models.MessageElements {
 			data, _ := seg["data"].(map[string]interface{})
 
 			elem := models.MessageElement{Type: segType}
+			if elem.Type == "record" {
+				elem.Type = "voice"
+			}
 			if text, ok := data["text"].(string); ok {
 				elem.Text = text
 			}
@@ -493,6 +535,16 @@ func parseMessageSegments(raw json.RawMessage) models.MessageElements {
 				elem.URL = elem.File
 			}
 
+			// Try to fetch image URL if missing
+			if (elem.Type == "image" || elem.Type == "record") && elem.URL == "" && elem.File != "" && b.client != nil {
+				// Only fetch if it doesn't look like a URL or local path we already have
+				if !strings.HasPrefix(elem.File, "http") && !strings.HasPrefix(elem.File, "data:") {
+					if info, err := b.client.GetImage(elem.File); err == nil && info.Url != "" {
+						elem.URL = resolveMediaURL(info.Url)
+					}
+				}
+			}
+
 			if qq, ok := data["qq"]; ok {
 				elem.QQ = fmt.Sprintf("%v", qq)
 			}
@@ -500,13 +552,33 @@ func parseMessageSegments(raw json.RawMessage) models.MessageElements {
 				elem.Name = name
 			}
 			if id, ok := data["id"]; ok {
+				var idVal int32
 				switch v := id.(type) {
 				case float64:
-					elem.ReplyID = int32(v)
+					idVal = int32(v)
 				case int:
-					elem.ReplyID = int32(v)
+					idVal = int32(v)
+				case int32:
+					idVal = v
+				case int64:
+					idVal = int32(v)
+				}
+				if idVal != 0 {
+					switch elem.Type {
+					case "reply":
+						elem.ReplyID = idVal
+					case "face":
+						elem.ID = idVal
+					}
 				}
 			}
+
+			// Fallback for broken images
+			if elem.Type == "image" && elem.URL == "" {
+				elem.Type = "text"
+				elem.Text = "[图片加载失败]"
+			}
+
 			result = append(result, elem)
 		}
 		return result
@@ -517,7 +589,7 @@ func parseMessageSegments(raw json.RawMessage) models.MessageElements {
 	if err := json.Unmarshal(raw, &str); err == nil {
 		// IMPORTANT: Parse the CQ code string!
 		segments := parseCQCode(str)
-		return segmentsToModelElements(segments)
+		return segmentsToModelElements(b.client, segments)
 	}
 
 	return nil
@@ -639,11 +711,33 @@ func (b *Backend) SendImageMessage(targetID int64, isGroup bool, imagePath strin
 
 	// Check if it's a URL or file path
 	var fileRef string
+	var modelFileRef string
+
 	if strings.HasPrefix(imagePath, "http://") || strings.HasPrefix(imagePath, "https://") {
 		fileRef = imagePath
+		modelFileRef = imagePath
 	} else {
-		// For local files, use file:// protocol
-		fileRef = "file://" + imagePath
+		// For local files, read and encode to base64 to support remote NapCat
+		data, err := os.ReadFile(imagePath)
+		if err != nil {
+			return nil, fmt.Errorf("read image file: %w", err)
+		}
+		b64 := base64.StdEncoding.EncodeToString(data)
+		fileRef = "base64://" + b64
+		// For local display, use Data URI to avoid file:// blocked issues
+		// Detect mime type roughly from extension or default to png/jpg
+		// Simplified: just use image/jpeg or png based on ext? or just generic?
+		// Browser handles data:image/png;base64,... well.
+		ext := strings.ToLower(filepath.Ext(imagePath))
+		mime := "image/jpeg"
+		if ext == ".png" {
+			mime = "image/png"
+		} else if ext == ".gif" {
+			mime = "image/gif"
+		} else if ext == ".webp" {
+			mime = "image/webp"
+		}
+		modelFileRef = fmt.Sprintf("data:%s;base64,%s", mime, b64)
 	}
 
 	segments := []napcat.MessageSegment{napcat.NewImageSegment(fileRef)}
@@ -680,8 +774,8 @@ func (b *Backend) SendImageMessage(targetID int64, isGroup bool, imagePath strin
 		TargetID:  targetID,
 		GroupID:   groupID,
 		Content:   "[图片]",
-		Raw:       fmt.Sprintf("[CQ:image,file=%s]", fileRef),
-		Elements:  models.MessageElements{{Type: "image", File: fileRef}},
+		Raw:       fmt.Sprintf("[CQ:image,file=%s]", modelFileRef),
+		Elements:  models.MessageElements{{Type: "image", File: modelFileRef, URL: modelFileRef}},
 		Timestamp: time.Now().Unix(),
 		IsSend:    true,
 		IsRead:    true,
@@ -714,7 +808,28 @@ func (b *Backend) SendVoiceMessage(targetID int64, isGroup bool, voicePath strin
 		return nil, fmt.Errorf("not connected")
 	}
 
-	fileRef := "file://" + voicePath
+	var fileRef string
+	var modelFileRef string
+
+	// For local files, read and encode to base64
+	if strings.HasPrefix(voicePath, "http://") || strings.HasPrefix(voicePath, "https://") {
+		fileRef = voicePath
+		modelFileRef = voicePath
+	} else {
+		data, err := os.ReadFile(voicePath)
+		if err != nil {
+			return nil, fmt.Errorf("read voice file: %w", err)
+		}
+		b64 := base64.StdEncoding.EncodeToString(data)
+		fileRef = "base64://" + b64
+		// Use data URI for audio playback
+		// Usually amr/silk? Chrome might not play raw amr?
+		// If it's from UploadVoice (amr), browser can't play it directly usually.
+		// But let's try data uri. If it's amr, it might fail anyway unless we have a decoder.
+		// NOTE: Webview usually can't play AMR.
+		// But for now, let's at least give it the data.
+		modelFileRef = "data:audio/amr;base64," + b64
+	}
 	segments := []napcat.MessageSegment{napcat.NewRecordSegment(fileRef)}
 
 	var result *napcat.SendMsgResponse
@@ -749,8 +864,8 @@ func (b *Backend) SendVoiceMessage(targetID int64, isGroup bool, voicePath strin
 		TargetID:  targetID,
 		GroupID:   groupID,
 		Content:   "[语音]",
-		Raw:       fmt.Sprintf("[CQ:record,file=%s]", fileRef),
-		Elements:  models.MessageElements{{Type: "voice", File: fileRef}},
+		Raw:       fmt.Sprintf("[CQ:record,file=%s]", modelFileRef),
+		Elements:  models.MessageElements{{Type: "voice", File: modelFileRef, URL: modelFileRef}},
 		Timestamp: time.Now().Unix(),
 		IsSend:    true,
 		IsRead:    true,

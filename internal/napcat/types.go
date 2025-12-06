@@ -176,6 +176,13 @@ type Config struct {
 	AccessToken  string `json:"access_token,omitempty"`
 }
 
+// ImageInfo represents image info
+type ImageInfo struct {
+	Size     int    `json:"size"`
+	Filename string `json:"filename"`
+	Url      string `json:"url"`
+}
+
 // DefaultConfig returns default configuration
 func DefaultConfig() Config {
 	return Config{

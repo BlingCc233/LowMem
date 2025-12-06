@@ -38,6 +38,30 @@ export namespace gorm {
 
 export namespace models {
 	
+	export class ChatSession {
+	    chat_id: number;
+	    is_group: boolean;
+	    name: string;
+	    avatar: string;
+	    last_message: string;
+	    time: number;
+	    unread: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatSession(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.chat_id = source["chat_id"];
+	        this.is_group = source["is_group"];
+	        this.name = source["name"];
+	        this.avatar = source["avatar"];
+	        this.last_message = source["last_message"];
+	        this.time = source["time"];
+	        this.unread = source["unread"];
+	    }
+	}
 	export class Group {
 	    group_id: number;
 	    group_name: string;
@@ -64,6 +88,7 @@ export namespace models {
 	    qq?: string;
 	    name?: string;
 	    reply_id?: number;
+	    id?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new MessageElement(source);
@@ -78,6 +103,7 @@ export namespace models {
 	        this.qq = source["qq"];
 	        this.name = source["name"];
 	        this.reply_id = source["reply_id"];
+	        this.id = source["id"];
 	    }
 	}
 	export class User {
@@ -167,10 +193,10 @@ export namespace models {
 		}
 	}
 	
-export class UnreadSummary {
-    chat_id: number;
-    is_group: boolean;
-    count: number;
+	export class UnreadSummary {
+	    chat_id: number;
+	    is_group: boolean;
+	    count: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new UnreadSummary(source);
@@ -178,35 +204,11 @@ export class UnreadSummary {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-        this.chat_id = source["chat_id"];
-        this.is_group = source["is_group"];
-        this.count = source["count"];
-    }
-}
-
-export class ChatSession {
-    chat_id: number;
-    is_group: boolean;
-    name: string;
-    avatar: string;
-    last_message: string;
-    time: number;
-    unread: number;
-
-    static createFrom(source: any = {}) {
-        return new ChatSession(source);
-    }
-
-    constructor(source: any = {}) {
-        if ('string' === typeof source) source = JSON.parse(source);
-        this.chat_id = source["chat_id"];
-        this.is_group = source["is_group"];
-        this.name = source["name"];
-        this.avatar = source["avatar"];
-        this.last_message = source["last_message"];
-        this.time = source["time"];
-        this.unread = source["unread"];
-    }
-}
+	        this.chat_id = source["chat_id"];
+	        this.is_group = source["is_group"];
+	        this.count = source["count"];
+	    }
+	}
 
 }
+

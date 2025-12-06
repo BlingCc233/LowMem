@@ -157,3 +157,25 @@ func (c *Client) GetStrangerInfo(userID int64) (*Sender, error) {
 	}
 	return &info, nil
 }
+
+// GetImage gets image info by file ID/name
+func (c *Client) GetImage(file string) (*ImageInfo, error) {
+	params := map[string]interface{}{
+		"file": file,
+	}
+
+	resp, err := c.Call("get_image", params)
+	if err != nil {
+		return nil, err
+	}
+	// NapCat might return error if file not found, handle gracefully
+	if !resp.IsOK() {
+		return nil, fmt.Errorf("api error: %s", resp.Message)
+	}
+
+	var info ImageInfo
+	if err := json.Unmarshal(resp.Data, &info); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+	return &info, nil
+}

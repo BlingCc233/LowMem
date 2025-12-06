@@ -59,7 +59,11 @@ type MessageElement struct {
 	File    string `json:"file,omitempty"`
 	QQ      string `json:"qq,omitempty"`
 	Name    string `json:"name,omitempty"`
-	ReplyID int32  `json:"reply_id,omitempty"`
+	// ReplyID is used for reply segments ([CQ:reply])
+	ReplyID int32 `json:"reply_id,omitempty"`
+	// ID is used for segments that carry an ID but are not replies,
+	// e.g. QQ face emoji ([CQ:face,id=xx]).
+	ID int32 `json:"id,omitempty"`
 }
 
 type MessageElements []MessageElement

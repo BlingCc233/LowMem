@@ -21,6 +21,7 @@ export interface MessageElement {
     qq?: string
     name?: string
     reply_id?: number
+    id?: number
 }
 
 export interface Message {

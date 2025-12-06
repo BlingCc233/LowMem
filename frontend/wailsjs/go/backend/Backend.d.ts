@@ -11,9 +11,9 @@ export function GetGroups():Promise<Array<models.Group>>;
 
 export function GetMessages(arg1:number,arg2:boolean):Promise<Array<models.Message>>;
 
-export function GetSessions():Promise<Array<models.ChatSession>>;
-
 export function GetSelfInfo():Promise<Record<string, any>>;
+
+export function GetSessions():Promise<Array<models.ChatSession>>;
 
 export function MarkChatRead(arg1:number,arg2:boolean):Promise<void>;
 

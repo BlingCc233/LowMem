@@ -3,7 +3,7 @@ import { ref, nextTick, watch, onMounted, onUnmounted, computed } from 'vue'
 import { useChatStore } from '../store/chat'
 import type { Message, MessageElement } from '../types'
 // @ts-ignore
-import { RecallMessage, OpenImage } from '../../wailsjs/go/backend/Backend'
+import { RecallMessage, OpenImage, SendImageMessage } from '../../wailsjs/go/backend/Backend'
 
 const store = useChatStore()
 const inputContent = ref('')
@@ -68,11 +68,112 @@ const formatTime = (ts: number) => {
 
 const send = () => {
     if (!inputContent.value.trim()) return
-    store.sendMessage(inputContent.value, { replyTo: replyTo.value?.message_id, atList: atList.value })
+    // Remove the @UserName part if it exists at the start to prevent double mentions
+    let content = inputContent.value
+    if (atList.value.length > 0) {
+        // Simple heuristic: remove leading @Names
+        // In a real app we might want structured input, but for text input:
+        const tokens = content.split(' ')
+        // Remove tokens that look like @Mention if we have atList
+        // Or deeper: NapCat/OneBot might append @User when we send [CQ:at], so we just send the content part if we want
+        // But the user sees "@User content". 
+        // If we send "[CQ:at] @User content", it shows "@@User content" or two bubbles.
+        // We will strip the literal "@User " string from the start if we are strictly using [CQ:at]
+        // But actually the store appends [CQ:at], so we should remove the text representation.
+        // We'll just trim left for now if it starts with @
+    }
+    
+    // Better approach: When `mention` is clicked, we appended `@Name `.
+    // If we detect `atList` is populated, we should probably strip that specific string from `content`.
+    // However, user might have deleted it. 
+    // Let's rely on the store to handle [CQ:at] and let's try to NOT double-send deeply.
+    // Actually the user reported "double at", meaning [CQ:at] + text "@User".
+    // We should remove the text part if we are sending the CQ code.
+    
+    // We will clean manual @ mentions from text if they match our atList
+    // Ideally we would parse the input, but let's just send what the user typed w/o explicit CQ codes for now?
+    // No, `store.sendMessage` appends CQ codes.
+    
+    // Correct fix: Scan `atList` and remove corresponding names from `content`
+     if (atList.value.length) {
+         // This is tricky without the original name map. 
+         // Let's just trust the user input string and NOT send the `atList` to store if the string already contains it?
+         // Or better: Remove the text "@Name " from content and let store add [CQ:at].
+         // Since we don't have the names easily here, we'll try to find keys starting with @.
+         // Simpler fix for "Double At": If we have atList, remove the "@Name " prefix if present.
+         // But we don't know the Name easily from ID here without looking up.
+         
+         // Alternative: if atList is present, do NOT append it in `store.ts` and just let the text be?
+         // But then it might not be a real mention (just text).
+         // The issue is likely `store.ts` doing `parts.push([CQ:at])` AND the content having `@Name`.
+         // We will remove the regex `^@\S+\s+` from content.
+         content = content.replace(/^@\S+\s+/, '')
+    }
+
+    store.sendMessage(content, { replyTo: replyTo.value?.message_id, atList: atList.value })
     inputContent.value = ''
     replyTo.value = null
     atList.value = []
     scrollToBottom()
+}
+
+const handlePaste = async (e: ClipboardEvent) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    for (const item of items) {
+        if (item.type.indexOf('image') !== -1) {
+            const file = item.getAsFile()
+            if (!file) continue
+            // We need to upload this file or save it to send.
+            // Since we can't easily upload from frontend JS to backend via Wails without a method,
+            // we will read as DataURL and pass to backend to save & send.
+            const reader = new FileReader()
+            reader.onload = async (evt) => {
+                const base64 = (evt.target?.result as string).split(',')[1]
+                try {
+                    // @ts-ignore
+                    const path = await window.go.backend.Backend.UploadImage(base64)
+                    if (path) {
+                        await SendImageMessage(store.currentChat?.id || 0, store.currentChat?.isGroup || false, path)
+                         scrollToBottom()
+                    }
+                } catch (err) {
+                    console.error("Paste image failed", err)
+                }
+            }
+            reader.readAsDataURL(file)
+            e.preventDefault() // User handled paste
+            return
+        }
+    }
+}
+
+const handleDrop = async (e: DragEvent) => {
+    const files = e.dataTransfer?.files
+    if (!files || files.length === 0) return
+    
+    for (const file of files) {
+        if (file.type.startsWith('image/')) {
+             // For drag and drop from OS, we might get actual file path if we were in Electron, but in Browser/Wails we get a File object.
+             // Wails 3 might handle native drag easier, but wails 2 usually gives File object.
+             // We use the same UploadImage trick.
+            const reader = new FileReader()
+            reader.onload = async (evt) => {
+                const base64 = (evt.target?.result as string).split(',')[1]
+                try {
+                    // @ts-ignore
+                     const path = await window.go.backend.Backend.UploadImage(base64)
+                    if (path) {
+                        await SendImageMessage(store.currentChat?.id || 0, store.currentChat?.isGroup || false, path)
+                        scrollToBottom()
+                    }
+                } catch (err) {
+                     console.error("Drop image failed", err)
+                }
+            }
+             reader.readAsDataURL(file)
+        }
+    }
 }
 
 const sendImage = async () => {
@@ -230,7 +331,10 @@ onUnmounted(() => {
                               <span v-else-if="el.type === 'at'" class="at-tag">@{{ el.name || el.qq }}</span>
                               <img v-else-if="el.type === 'image'" :src="el.url || el.file" class="msg-image nb-box" @load="scrollToBottom" />
                               <audio v-else-if="el.type === 'voice'" controls :src="el.url || el.file" class="voice"></audio>
-                              <span v-else-if="el.type === 'face'">[{{ el.text || '表情' }}]</span>
+                              <span v-else-if="el.type === 'face'">
+                                  <img v-if="el.id" :src="`https://raw.githubusercontent.com/kyubotics/coolq-http-api/master/docs/face/${el.id}.png`" style="width:24px;vertical-align:middle" :alt="`[表情${el.id}]`" @error="(e:Event)=>(e.target as HTMLImageElement).style.display='none'" />
+                                  <span v-else>[表情]</span>
+                              </span>
                               <span v-else class="pill">{{ el.type }}</span>
                           </template>
                       </div>
@@ -239,7 +343,11 @@ onUnmounted(() => {
           </div>
       </div>
       
-      <div class="input-area">
+      <div class="input-area" 
+        @paste="handlePaste" 
+        @drop.prevent="handleDrop" 
+        @dragover.prevent
+      >
           <div v-if="replyTo" class="replying nb-box">
               <div class="replying-text">回复 {{ replyTo.sender?.nickname || '我' }}</div>
               <button class="link-btn" @click="replyTo = null">取消</button>
