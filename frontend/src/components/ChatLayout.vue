@@ -1,14 +1,46 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useChatStore } from '../store/chat'
 import ChatWindow from './ChatWindow.vue'
 
 const store = useChatStore()
+const isMobile = ref(false)
+const showSidebar = ref(true)
+
+const checkMobile = () => {
+    isMobile.value = window.innerWidth < 768
+    if (!isMobile.value) {
+        showSidebar.value = true
+    }
+}
 
 onMounted(() => {
   store.initSessions()
   store.initListeners()
+  checkMobile()
+  window.addEventListener('resize', checkMobile)
 })
+
+onUnmounted(() => {
+    window.removeEventListener('resize', checkMobile)
+})
+
+watch(() => store.currentChat, (val) => {
+    if (val && isMobile.value) {
+        showSidebar.value = false
+    }
+})
+
+const handleBack = () => {
+    store.selectChat(0, false, '', '') // Clear current chat or just show sidebar?
+    // Actually we might want to keep selection but show sidebar.
+    // But typically "Back" means deselect or just navigate view.
+    // Let's just switch view state for now, but to be consistent with "Selecting a chat",
+    // maybe we just clear currentChat so ChatWindow unmounts?
+    // But `store.selectChat` logic sets currentChat. 
+    // If we just want to show sidebar:
+    showSidebar.value = true
+}
 
 const formatTime = (ts: number) => {
     if (!ts) return ''
@@ -23,7 +55,7 @@ const formatTime = (ts: number) => {
 
 <template>
   <div class="layout">
-    <div class="sidebar nb-box">
+    <div class="sidebar nb-box" v-show="!isMobile || showSidebar">
         <div class="sidebar-header">
             <input 
               v-model="store.sessionSearch" 
@@ -70,8 +102,12 @@ const formatTime = (ts: number) => {
         </div>
     </div>
     
-    <div class="main-area nb-box">
-        <ChatWindow v-if="store.currentChat" />
+    <div class="main-area nb-box" v-show="!isMobile || !showSidebar">
+        <ChatWindow 
+            v-if="store.currentChat" 
+            :is-mobile="isMobile" 
+            @back="handleBack" 
+        />
         <div v-else class="empty-state">
             <p>Select a contact to start chatting</p>
         </div>
@@ -94,6 +130,28 @@ const formatTime = (ts: number) => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  height: 100%; /* Ensure full height */
+}
+
+/* Mobile styles */
+@media (max-width: 768px) {
+    .layout {
+        padding: 0;
+        gap: 0;
+    }
+    .sidebar {
+        width: 100%;
+        border-right: none;
+    }
+    .main-area {
+        width: 100%;
+        height: 100%;
+        border: none;
+    }
+    .nb-box {
+        border-radius: 0;
+        box-shadow: none;
+    }
 }
 
 .sidebar-header {

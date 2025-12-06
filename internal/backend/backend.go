@@ -271,8 +271,16 @@ func (b *Backend) GetGroups() ([]models.Group, error) {
 }
 
 // GetMessages returns messages for a chat
-func (b *Backend) GetMessages(id int64, isGroup bool) ([]models.Message, error) {
-	return db.GetMessages(id, isGroup, 0, 50)
+func (b *Backend) GetMessages(id int64, isGroup bool, offset int) ([]models.Message, error) {
+	return db.GetMessages(id, isGroup, offset, 50)
+}
+
+// GetGroupMemberInfo gets group member info
+func (b *Backend) GetGroupMemberInfo(groupID int64, userID int64) (*napcat.GroupMemberInfo, error) {
+	if b.client != nil && (b.client.IsConnected() || b.client.IsHTTPAvailable()) {
+		return b.client.GetGroupMemberInfo(groupID, userID)
+	}
+	return nil, fmt.Errorf("backend not connected")
 }
 
 // GetOneBotMessage returns a single message by its OneBot ID
@@ -458,17 +466,16 @@ func segmentsToModelElements(client *napcat.Client, segments []napcat.MessageSeg
 		if file, ok := seg.Data["file"].(string); ok {
 			elem.File = file
 			// If URL is missing, decide how to resolve based on type and available helpers.
+			// If URL is missing or failed to resolve locally, try via NapCat API
+			if elem.URL == "" && elem.File != "" && client != nil && (client.IsConnected() || client.IsHTTPAvailable()) {
+				info, err := client.GetImage(elem.File)
+				if err == nil && info.Url != "" {
+					elem.URL = resolveMediaURL(info.Url)
+				}
+			}
+			// Fallback: treat the file as a path/URL directly.
 			if elem.URL == "" {
-				// For image segments we can usually resolve via NapCat's get_image API.
-				if elem.Type == "image" && client != nil && (client.IsConnected() || client.IsHTTPAvailable()) {
-					if info, err := client.GetImage(file); err == nil && info.Url != "" {
-						elem.URL = resolveMediaURL(info.Url)
-					}
-				}
-				// Fallback: treat the file as a path/URL directly.
-				if elem.URL == "" {
-					elem.URL = resolveMediaURL(file)
-				}
+				elem.URL = resolveMediaURL(file)
 			}
 		}
 
@@ -687,16 +694,10 @@ func resolveMediaURL(raw string) string {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// If read fails, fall back to returning the path as is (maybe Wails can handle it in build?)
-		// But for now return file:// scheme so <img src> at least tries
-		if strings.HasPrefix(value, "file://") {
-			return value
-		}
-		cleaned := filepath.ToSlash(value)
-		if strings.HasPrefix(cleaned, "/") {
-			return "file://" + cleaned
-		}
-		return "file:///" + cleaned
+		// Do not return "file://" schema if we can't actually read the file.
+		// This signals to the caller (segmentsToModelElements) that local resolution failed,
+		// triggering the fallback to NapCat API.
+		return ""
 	}
 
 	// Detect mime type

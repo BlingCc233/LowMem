@@ -212,3 +212,48 @@ export namespace models {
 
 }
 
+export namespace napcat {
+	
+	export class GroupMemberInfo {
+	    group_id: number;
+	    user_id: number;
+	    nickname: string;
+	    card: string;
+	    sex: string;
+	    age: number;
+	    area: string;
+	    join_time: number;
+	    last_sent_time: number;
+	    level: string;
+	    role: string;
+	    unfriendly: boolean;
+	    title: string;
+	    title_expire_time: number;
+	    card_changeable: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new GroupMemberInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.group_id = source["group_id"];
+	        this.user_id = source["user_id"];
+	        this.nickname = source["nickname"];
+	        this.card = source["card"];
+	        this.sex = source["sex"];
+	        this.age = source["age"];
+	        this.area = source["area"];
+	        this.join_time = source["join_time"];
+	        this.last_sent_time = source["last_sent_time"];
+	        this.level = source["level"];
+	        this.role = source["role"];
+	        this.unfriendly = source["unfriendly"];
+	        this.title = source["title"];
+	        this.title_expire_time = source["title_expire_time"];
+	        this.card_changeable = source["card_changeable"];
+	    }
+	}
+
+}
+

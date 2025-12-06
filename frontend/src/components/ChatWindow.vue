@@ -4,14 +4,24 @@ import { useChatStore } from '../store/chat'
 import type { Message, MessageElement } from '../types'
 // @ts-ignore
 import { RecallMessage, OpenImage, SendImageMessage } from '../../wailsjs/go/backend/Backend'
+// @ts-ignore
+import { BrowserOpenURL } from '../../wailsjs/runtime/runtime'
+
+
+const props = defineProps<{ isMobile?: boolean }>()
+const emit = defineEmits<{ (e: 'back'): void }>()
 
 const store = useChatStore()
 const inputContent = ref('')
 const msgListRef = ref<HTMLElement | null>(null)
 const contextMenu = ref<{ visible: boolean; x: number; y: number; msg: Message | null }>({ visible: false, x: 0, y: 0, msg: null })
 const replyTo = ref<Message | null>(null)
-const atList = ref<number[]>([])
+const atList = ref<number[]>([]) // Stores UIDs of people we officially @-ed via context menu or click
 const searchQuery = ref('')
+const isComposing = ref(false)
+const pendingImages = ref<string[]>([]) // List of base64 strings to send
+const mentionPopup = ref({ visible: false, x: 0, y: 0, filter: '' })
+const activeMentionIndex = ref(0)
 
 const messageMap = computed(() => {
     const map: Record<number, Message> = {}
@@ -26,6 +36,30 @@ const messageMap = computed(() => {
         map[id] = store.referencedMessages[id]
     }
     return map
+})
+
+// Derive active members from recent messages for mention list
+const activeMembers = computed(() => {
+    const members = new Map<number, { id: number, name: string, avatar: string }>()
+    // Add self? maybe not necessary
+    store.messages.forEach(m => {
+        if (m.sender && m.sender_id !== 0 && !members.has(m.sender_id)) {
+            members.set(m.sender_id, {
+                id: m.sender_id,
+                name: m.sender.nickname || String(m.sender_id),
+                avatar: m.sender.avatar_url
+            })
+        }
+    })
+    // Also include friend list if private chat? No, mentions usually for group.
+    return Array.from(members.values())
+})
+
+const filteredMembers = computed(() => {
+    const term = mentionPopup.value.filter.toLowerCase()
+    return activeMembers.value.filter(m => 
+        m.name.toLowerCase().includes(term) || String(m.id).includes(term)
+    )
 })
 
 const scrollToBottom = () => {
@@ -51,8 +85,43 @@ watch(() => store.messages, (msgs) => {
 watch(() => store.currentChat, () => {
     replyTo.value = null
     atList.value = []
+    pendingImages.value = []
     scrollToBottom()
 })
+
+// Watch input for @ mention trigger
+watch(inputContent, (newVal) => {
+    const lastChar = newVal.slice(-1)
+    if (lastChar === '@') {
+        mentionPopup.value.visible = true
+        mentionPopup.value.filter = ''
+        activeMentionIndex.value = 0
+        // Position? ideally relative to caret, but simplified: fixed above input
+    } else if (mentionPopup.value.visible) {
+        // Update filter based on text after last @
+        const match = newVal.match(/@([^\s]*)$/)
+        if (match) {
+            mentionPopup.value.filter = match[1]
+        } else {
+            mentionPopup.value.visible = false
+        }
+    }
+})
+
+const confirmMention = (member: { id: number, name: string }) => {
+    const match = inputContent.value.match(/@([^\s]*)$/)
+    if (match) {
+        const prefix = inputContent.value.slice(0, match.index)
+        inputContent.value = prefix + `@${member.name} `
+        if (!atList.value.includes(member.id)) {
+            atList.value.push(member.id)
+        }
+    }
+    mentionPopup.value.visible = false
+    document.querySelector('.chat-input')?.classList.remove('suggest-open'); // Optional UI hint
+    // Focus back
+    (document.querySelector('.chat-input') as HTMLInputElement)?.focus()
+}
 
 const elementList = (msg: Message): MessageElement[] => {
     if (msg.elements && msg.elements.length) return msg.elements
@@ -69,8 +138,20 @@ const escapeHtml = (text: string) => text
 const formatText = (text: string) => {
     const escaped = escapeHtml(text)
     const urlRegex = /(https?:\/\/[\w.-]+(?:\/[\w+%.-]*)?[^\s<]*)/g
-    return escaped.replace(urlRegex, '<a href="$1" target="_blank">$1</a>')
+    return escaped.replace(urlRegex, '<a href="$1">$1</a>')
 }
+
+const handleContentClick = (e: MouseEvent) => {
+    const target = e.target as HTMLElement
+    if (target.tagName === 'A') {
+        const href = target.getAttribute('href')
+        if (href) {
+             e.preventDefault()
+             BrowserOpenURL(href)
+        }
+    }
+}
+
 
 const formatTime = (ts: number) => {
     if (!ts) return ''
@@ -78,47 +159,51 @@ const formatTime = (ts: number) => {
     return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
 }
 
-const send = () => {
-    if (!inputContent.value.trim()) return
-    // Remove the @UserName part if it exists at the start to prevent double mentions
-    let content = inputContent.value
-    if (atList.value.length > 0) {
-        // Simple heuristic: remove leading @Names
-        // In a real app we might want structured input, but for text input:
-        const tokens = content.split(' ')
-        // Remove tokens that look like @Mention if we have atList
-        // Or deeper: NapCat/OneBot might append @User when we send [CQ:at], so we just send the content part if we want
-        // But the user sees "@User content". 
-        // If we send "[CQ:at] @User content", it shows "@@User content" or two bubbles.
-        // We will strip the literal "@User " string from the start if we are strictly using [CQ:at]
-        // But actually the store appends [CQ:at], so we should remove the text representation.
-        // We'll just trim left for now if it starts with @
+const handleEnter = (e: KeyboardEvent) => {
+    if (isComposing.value) return
+    if (mentionPopup.value.visible) {
+        e.preventDefault()
+        if (filteredMembers.value.length > 0) {
+            confirmMention(filteredMembers.value[activeMentionIndex.value])
+        }
+        return
     }
-    
-    // Better approach: When `mention` is clicked, we appended `@Name `.
-    // If we detect `atList` is populated, we should probably strip that specific string from `content`.
-    // However, user might have deleted it. 
-    // Let's rely on the store to handle [CQ:at] and let's try to NOT double-send deeply.
-    // Actually the user reported "double at", meaning [CQ:at] + text "@User".
-    // We should remove the text part if we are sending the CQ code.
-    
-    // We will clean manual @ mentions from text if they match our atList
-    // Ideally we would parse the input, but let's just send what the user typed w/o explicit CQ codes for now?
-    // No, `store.sendMessage` appends CQ codes.
-    
-    // Correct fix: Scan `atList` and remove corresponding names from `content`
-     if (atList.value.length) {
-         // This is tricky without the original name map. 
-         // Let's just trust the user input string and NOT send the `atList` to store if the string already contains it?
-         // Or better: Remove the text "@Name " from content and let store add [CQ:at].
-         // Since we don't have the names easily here, we'll try to find keys starting with @.
-         // Simpler fix for "Double At": If we have atList, remove the "@Name " prefix if present.
-         // But we don't know the Name easily from ID here without looking up.
-         
-         // Alternative: if atList is present, do NOT append it in `store.ts` and just let the text be?
-         // But then it might not be a real mention (just text).
-         // The issue is likely `store.ts` doing `parts.push([CQ:at])` AND the content having `@Name`.
-         // We will remove the regex `^@\S+\s+` from content.
+    if (e.shiftKey) return // Allow multiline
+    e.preventDefault()
+    send()
+}
+
+const navigateMention = (step: number) => {
+    if (!mentionPopup.value.visible) return
+    const len = filteredMembers.value.length
+    if (len === 0) return
+    activeMentionIndex.value = (activeMentionIndex.value + step + len) % len
+}
+
+const send = async () => {
+    // Send pending images first
+    for (const b64 of pendingImages.value) {
+        try {
+            // Helper to upload
+             // @ts-ignore
+             const path = await window.go.backend.Backend.UploadImage(b64)
+             if (path) {
+                 await SendImageMessage(store.currentChat?.id || 0, store.currentChat?.isGroup || false, path)
+             }
+        } catch (e) {
+            console.error(e)
+        }
+    }
+    pendingImages.value = []
+
+    if (!inputContent.value.trim()) {
+        scrollToBottom()
+        return
+    }
+
+    let content = inputContent.value
+    // Cleanup pseudo-at text if needed, similar to before
+    if (atList.value.length) {
          content = content.replace(/^@\S+\s+/, '')
     }
 
@@ -136,25 +221,13 @@ const handlePaste = async (e: ClipboardEvent) => {
         if (item.type.indexOf('image') !== -1) {
             const file = item.getAsFile()
             if (!file) continue
-            // We need to upload this file or save it to send.
-            // Since we can't easily upload from frontend JS to backend via Wails without a method,
-            // we will read as DataURL and pass to backend to save & send.
             const reader = new FileReader()
             reader.onload = async (evt) => {
                 const base64 = (evt.target?.result as string).split(',')[1]
-                try {
-                    // @ts-ignore
-                    const path = await window.go.backend.Backend.UploadImage(base64)
-                    if (path) {
-                        await SendImageMessage(store.currentChat?.id || 0, store.currentChat?.isGroup || false, path)
-                         scrollToBottom()
-                    }
-                } catch (err) {
-                    console.error("Paste image failed", err)
-                }
+                pendingImages.value.push(base64)
             }
             reader.readAsDataURL(file)
-            e.preventDefault() // User handled paste
+            e.preventDefault() 
             return
         }
     }
@@ -166,40 +239,18 @@ const handleDrop = async (e: DragEvent) => {
     
     for (const file of Array.from(files)) {
         if (file.type.startsWith('image/')) {
-             // For drag and drop from OS, we might get actual file path if we were in Electron, but in Browser/Wails we get a File object.
-             // Wails 3 might handle native drag easier, but wails 2 usually gives File object.
-             // We use the same UploadImage trick.
             const reader = new FileReader()
             reader.onload = async (evt) => {
                 const base64 = (evt.target?.result as string).split(',')[1]
-                try {
-                    // @ts-ignore
-                     const path = await window.go.backend.Backend.UploadImage(base64)
-                    if (path) {
-                        await SendImageMessage(store.currentChat?.id || 0, store.currentChat?.isGroup || false, path)
-                        scrollToBottom()
-                    }
-                } catch (err) {
-                     console.error("Drop image failed", err)
-                }
+                pendingImages.value.push(base64)
             }
              reader.readAsDataURL(file)
         }
     }
 }
 
-const sendImage = async () => {
-    try {
-        const path = await OpenImage()
-        if (path) {
-            // Send image message with CQ code
-            // Note: NapCat accepts file:// absolute path
-            const content = `[CQ:image,file=file://${path}]`
-            store.sendMessage(content, { replyTo: replyTo.value?.message_id, atList: atList.value })
-        }
-    } catch(e) {
-        console.error(e)
-    }
+const removePendingImage = (index: number) => {
+    pendingImages.value.splice(index, 1)
 }
 
 const showContextMenu = (e: MouseEvent, msg: Message) => {
@@ -210,6 +261,12 @@ const showContextMenu = (e: MouseEvent, msg: Message) => {
         y: e.clientY,
         msg,
     }
+    // Adjust if off screen
+    nextTick(() => {
+        if (contextMenu.value.y + 150 > window.innerHeight) {
+            contextMenu.value.y = window.innerHeight - 160
+        }
+    })
 }
 
 const closeContextMenu = () => {
@@ -219,6 +276,7 @@ const closeContextMenu = () => {
 const handleDocumentClick = (event: MouseEvent) => {
     if (event.button === 2) return
     closeContextMenu()
+    mentionPopup.value.visible = false
 }
 
 const recallMsg = async () => {
@@ -230,7 +288,9 @@ const recallMsg = async () => {
 
 const setReply = (msg: Message) => {
     replyTo.value = msg
-    closeContextMenu()
+    closeContextMenu();
+    // Focus input
+    (document.querySelector('.chat-input') as HTMLInputElement)?.focus()
 }
 
 const mention = (msg: Message) => {
@@ -238,13 +298,16 @@ const mention = (msg: Message) => {
     if (!atList.value.includes(msg.sender_id)) {
         atList.value.push(msg.sender_id)
     }
-    inputContent.value = `@${msg.sender?.nickname || msg.sender_id} ` + inputContent.value
+    const name = msg.sender?.nickname || String(msg.sender_id)
+    inputContent.value = `@${name} ` + inputContent.value
     closeContextMenu()
+    ;(document.querySelector('.chat-input') as HTMLInputElement)?.focus()
 }
 
 const forwardMsg = (msg: Message) => {
+    // Basic implementation for now, ideally UI dialog
     if (!msg.database_id) return
-    const target = prompt('输入聊天ID，群聊请以 g 前缀，例如 g123456')
+    const target = prompt('输入转发目标ID (好友ID 或 g群号):')
     if (!target) return
     const isGroup = target.startsWith('g') || target.startsWith('G')
     const id = Number(isGroup ? target.slice(1) : target)
@@ -258,21 +321,37 @@ const performSearch = () => {
 }
 
 const scrollToMessage = (messageId: number) => {
-    const existing = store.messages.find((m) => m.message_id === messageId)
-    if (!existing) {
-        const found = store.searchResults.find((m) => m.message_id === messageId)
-        if (found) {
-            store.messages.push(found)
-            store.messages.sort((a, b) => a.time - b.time)
-        }
-    }
-
-    nextTick(() => {
+    const jump = () => {
         const el = document.getElementById(`msg-${messageId}`)
         if (el) {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            el.classList.add('highlight')
+            setTimeout(() => el.classList.remove('highlight'), 2000)
         }
-    })
+    }
+
+    const existing = store.messages.find((m) => m.message_id === messageId)
+    if (existing) {
+        jump()
+    } else {
+        // Try fetch or check search results? 
+        // If not loaded, we might need to load history logic (not implemented yet)
+        console.warn("Message not in view")
+    }
+}
+
+const handleScroll = async () => {
+    if (!msgListRef.value) return
+    if (msgListRef.value.scrollTop === 0 && store.hasMoreMessages && !store.loadingMessages) {
+        const oldHeight = msgListRef.value.scrollHeight
+        await store.loadHistory()
+        nextTick(() => {
+            if (msgListRef.value) {
+                const newHeight = msgListRef.value.scrollHeight
+                msgListRef.value.scrollTop = newHeight - oldHeight
+            }
+        })
+    }
 }
 
 onMounted(() => {
@@ -282,11 +361,21 @@ onMounted(() => {
 onUnmounted(() => {
     document.removeEventListener('click', handleDocumentClick)
 })
+
+const handleImgError = (e: Event) => {
+    const img = e.target as HTMLImageElement
+    img.style.display = 'none'
+    // append text node?
+    img.parentElement?.insertAdjacentText('beforeend', '[图片加载失败]')
+}
 </script>
 
 <template>
   <div class="chat-window">
       <div class="header">
+          <button v-if="props.isMobile" @click="emit('back')" class="icon-btn back-btn" aria-label="Back">
+             ←
+          </button>
           <div class="title-block">
               <h2>{{ store.currentChat?.name }}</h2>
               <span v-if="store.currentChat?.isGroup" class="pill">群聊</span>
@@ -296,9 +385,8 @@ onUnmounted(() => {
                 v-model="searchQuery" 
                 @keyup.enter="performSearch"
                 class="nb-input search-input" 
-                placeholder="搜索聊天记录"
+                placeholder="搜索消息"
               />
-              <button @click="performSearch" class="nb-button ghost">Search</button>
           </div>
       </div>
 
@@ -309,13 +397,14 @@ onUnmounted(() => {
             class="search-item"
             @click="scrollToMessage(item.message_id)"
           >
-              <div class="search-meta">{{ formatTime(item.time) }}</div>
+              <div class="search-meta">{{ formatTime(item.time) }} - {{ item.sender?.nickname }}</div>
               <div class="search-text">{{ item.content }}</div>
           </div>
       </div>
       
-      <div class="messages" ref="msgListRef">
-          <div v-if="store.loadingMessages" class="loading">Loading...</div>
+      <div class="messages" ref="msgListRef" @scroll="handleScroll">
+          <div v-if="store.loadingMessages && store.messages.length === 0" class="loading">Loading...</div>
+          <div v-if="store.loadingMessages && store.messages.length > 0" class="loading-more">Loading history...</div>
           
           <div 
             v-for="msg in store.messages" 
@@ -328,21 +417,29 @@ onUnmounted(() => {
               <img v-if="msg.sender_id !== 0 && !msg.is_send" :src="msg.sender?.avatar_url" class="avatar" />
               <div class="bubble nb-box" :class="{ recalled: msg.recall }">
                   <div class="meta">
-                      <span class="sender">{{ msg.is_send ? '我' : (msg.sender?.nickname || '好友') }}</span>
+                      <span class="sender">{{ msg.is_send ? '我' : (msg.sender?.nickname || 'Ta') }}</span>
                       <span class="time">{{ formatTime(msg.time) }}</span>
                   </div>
                   <div v-if="msg.recall" class="recall-text">消息已撤回</div>
                   <template v-else>
-                      <div v-if="msg.reply_to" class="reply-preview nb-box">
+                      <div v-if="msg.reply_to" class="reply-preview nb-box" @click="scrollToMessage(msg.reply_to)">
                           <span class="label">回复</span>
-                          <div class="reply-body">{{ messageMap[msg.reply_to]?.content || '引用的消息' }}</div>
+                          <div class="reply-body">{{ messageMap[msg.reply_to]?.content || '...' }}</div>
                       </div>
-                      <div class="content">
+                      <div class="content" @click="handleContentClick">
                           <template v-for="(el, idx) in elementList(msg)" :key="idx">
                               <span v-if="el.type === 'text'" class="text" v-html="formatText(el.text || '')"></span>
-                              <span v-else-if="el.type === 'at'" class="at-tag">@{{ el.name || el.qq }}</span>
-                              <img v-else-if="el.type === 'image'" :src="el.url || el.file" class="msg-image nb-box" @load="scrollToBottom" />
-                              <audio v-else-if="el.type === 'voice'" controls :src="el.url || el.file" class="voice"></audio>
+                              <span v-else-if="el.type === 'at'" class="at-tag">@{{ store.getMemberNameSync(store.currentChat?.isGroup ? store.currentChat.id : 0, Number(el.qq)) }}</span>
+                              <img 
+                                v-else-if="el.type === 'image'" 
+                                :src="el.url || el.file" 
+                                class="msg-image nb-box" 
+                                @load="scrollToBottom" 
+                                @error="handleImgError"
+                              />
+                              <div v-else-if="el.type === 'voice'" class="voice-msg">
+                                  <audio controls :src="el.url || el.file"></audio>
+                              </div>
                               <span v-else-if="el.type === 'face'">
                                   <img v-if="el.id" :src="`https://raw.githubusercontent.com/kyubotics/coolq-http-api/master/docs/face/${el.id}.png`" style="width:24px;vertical-align:middle" :alt="`[表情${el.id}]`" @error="(e:Event)=>(e.target as HTMLImageElement).style.display='none'" />
                                   <span v-else>[表情]</span>
@@ -360,20 +457,52 @@ onUnmounted(() => {
         @drop.prevent="handleDrop" 
         @dragover.prevent
       >
-          <div v-if="replyTo" class="replying nb-box">
-              <div class="replying-text">回复 {{ replyTo.sender?.nickname || '我' }}</div>
-              <button class="link-btn" @click="replyTo = null">取消</button>
-          </div>
-          <div class="toolbar">
-             <!-- <button @click="sendImage" class="icon-btn">📷</button> -->
-          </div>
-          <input 
-            v-model="inputContent" 
-            @keyup.enter="send"
-            class="nb-input chat-input" 
-            placeholder="输入消息，可@或回复"
-          />
-          <button @click="send" class="nb-button">Send</button>
+           <!-- Mention Popup -->
+           <div v-if="mentionPopup.visible" class="mention-popup nb-box">
+                <div 
+                  v-for="(m, idx) in filteredMembers" 
+                  :key="m.id" 
+                  class="mention-item"
+                  :class="{ active: idx === activeMentionIndex }"
+                  @click="confirmMention(m)"
+                >
+                    <img :src="m.avatar" class="tiny-avatar"/>
+                    <span>{{ m.name }}</span>
+                </div>
+                <div v-if="filteredMembers.length === 0" class="mention-empty">No match</div>
+           </div>
+
+           <!-- Pending Images -->
+           <div v-if="pendingImages.length" class="pending-images">
+               <div v-for="(img, idx) in pendingImages" :key="idx" class="pending-img-wrap">
+                   <img :src="`data:image/jpeg;base64,${img}`" class="pending-img" />
+                   <button class="remove-btn" @click="removePendingImage(idx)">×</button>
+               </div>
+           </div>
+
+           <div v-if="replyTo" class="replying nb-box">
+               <div class="replying-text">回复 {{ replyTo.sender?.nickname || '...' }}</div>
+               <button class="link-btn" @click="replyTo = null">取消</button>
+           </div>
+           
+           <div class="toolbar">
+              <!-- <button class="icon-btn">😊</button> -->
+           </div>
+
+           <div class="input-row">
+                <textarea 
+                    v-model="inputContent" 
+                    @keydown.enter="handleEnter"
+                    @keydown.up.prevent="navigateMention(-1)"
+                    @keydown.down.prevent="navigateMention(1)"
+                    @compositionstart="isComposing = true"
+                    @compositionend="isComposing = false"
+                    class="nb-input chat-input" 
+                    placeholder="输入消息，Enter发送，Shift+Enter换行"
+                    rows="1"
+                ></textarea>
+                <button @click="send" class="nb-button">Send</button>
+           </div>
       </div>
 
       <div 
@@ -397,34 +526,47 @@ onUnmounted(() => {
     height: 100%;
     position: relative;
     background: linear-gradient(135deg, #fef3c7 0%, #e0f2fe 100%);
-    border: var(--border-width) solid var(--border-color);
 }
 
 .header {
-    padding: 15px;
+    padding: 10px 15px;
     border-bottom: var(--border-width) solid var(--border-color);
     background: #fefefe;
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 10px;
+    height: 50px;
+    box-sizing: border-box;
 }
 .title-block {
     display: flex;
     align-items: center;
     gap: 10px;
+    flex: 1;
+    overflow: hidden;
 }
 .header h2 {
     margin: 0;
-    font-size: 1.2rem;
+    font-size: 1.1rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .tools {
     display: flex;
-    align-items: center;
     gap: 8px;
 }
 .search-input {
-    width: 220px;
+    width: 150px;
+    font-size: 0.8rem;
+    padding: 4px 8px;
+}
+.back-btn {
+    font-size: 1.2rem;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0 5px;
 }
 
 .search-results {
@@ -433,24 +575,15 @@ onUnmounted(() => {
     margin: 8px 16px 0;
     padding: 8px;
     background: #fff;
+    border-bottom: 2px solid #eee;
 }
 .search-item {
     padding: 6px 8px;
     cursor: pointer;
     border-bottom: 1px dashed var(--border-color);
 }
-.search-item:last-child {
-    border-bottom: none;
-}
 .search-item:hover {
     background: #f0f9ff;
-}
-.search-meta {
-    font-size: 0.75rem;
-    color: #555;
-}
-.search-text {
-    font-weight: 700;
 }
 
 .messages {
@@ -460,16 +593,14 @@ onUnmounted(() => {
     display: flex;
     flex-direction: column;
     gap: 15px;
-    background: transparent;
 }
 
 .msg-row {
     display: flex;
     align-items: flex-end;
     gap: 10px;
-    max-width: 70%;
+    max-width: 80%; /* Increased width */
 }
-
 .msg-row.mine {
     align-self: flex-end;
     flex-direction: row-reverse;
@@ -483,31 +614,43 @@ onUnmounted(() => {
 }
 
 .bubble {
-    padding: 10px 15px;
+    padding: 8px 12px;
     background: #fff;
-    border-radius: 10px;
+    border-radius: 12px;
     border: var(--border-width) solid var(--border-color);
-    box-shadow: var(--shadow-X) var(--shadow-Y) 0 var(--border-color);
-    min-width: 200px;
+    box-shadow: 2px 2px 0 var(--border-color);
+    min-width: 60px;
+    position: relative;
 }
+.msg-row.mine .bubble {
+    background: var(--secondary-color);
+    color: white;
+    border-bottom-right-radius: 2px;
+}
+.msg-row:not(.mine) .bubble {
+     border-bottom-left-radius: 2px;
+}
+
 .bubble.recalled {
     background: #f5f5f5;
     color: #777;
 }
 
-.msg-row.mine .bubble {
-    background: var(--secondary-color);
-    color: white;
-    border-bottom-left-radius: 10px;
-    border-bottom-right-radius: 0;
+.msg-row.highlight .bubble {
+    animation: flash 1s;
+}
+@keyframes flash {
+    0% { background: yellow; }
+    100% { background: #fff; }
 }
 
 .meta {
     display: flex;
     justify-content: space-between;
-    font-size: 0.75rem;
-    margin-bottom: 6px;
-    color: #555;
+    font-size: 0.7rem;
+    margin-bottom: 4px;
+    color: #888;
+    gap: 10px;
 }
 .msg-row.mine .meta {
     color: #e5e5e5;
@@ -516,126 +659,184 @@ onUnmounted(() => {
 .content {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
     word-break: break-all;
 }
 
 .text a {
     color: var(--accent-color);
     text-decoration: underline;
-    word-break: break-all;
+    cursor: pointer;
+}
+.msg-row.mine .text a {
+    color: #fff;
 }
 
 .msg-image {
-    max-width: 260px;
-    border: var(--border-width) solid var(--border-color);
+    max-width: 100%;
+    max-height: 300px;
+    border-radius: 8px;
+    cursor: pointer;
 }
 
 .reply-preview {
-    padding: 6px;
-    margin-bottom: 8px;
-    background: #f4f4f5;
-    font-size: 0.9rem;
-    display: flex;
-    gap: 8px;
-    align-items: center;
+    padding: 4px 8px;
+    margin-bottom: 6px;
+    background: rgba(0,0,0,0.05);
+    border-left: 3px solid var(--accent-color);
+    font-size: 0.85rem;
+    cursor: pointer;
 }
 .reply-preview .label {
-    font-weight: 800;
+    font-weight: bold;
+    display: block;
+}
+.reply-preview .reply-body {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .input-area {
-    padding: 15px;
+    padding: 10px;
     border-top: var(--border-width) solid var(--border-color);
     display: flex;
-    gap: 10px;
+    gap: 8px;
     background: #fafafa;
     flex-direction: column;
-}
-
-.chat-input {
-    flex: 1;
-}
-
-.context-menu {
-    position: fixed;
-    z-index: 1000;
-    background: white;
-    min-width: 170px;
-}
-.menu-item {
-    padding: 10px 15px;
-    cursor: pointer;
-    font-weight: bold;
-}
-.menu-item:hover {
-    background: #f0f0f0;
-}
-
-.pill {
-    display: inline-block;
-    padding: 2px 8px;
-    border: var(--border-width) solid var(--border-color);
-    font-size: 0.75rem;
-    background: #fff;
-    font-weight: 800;
+    position: relative;
 }
 
 .replying {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 6px 10px;
-    background: #fff1f2;
+    padding: 4px 8px;
+    background: #eef2ff;
+    border-left: 3px solid var(--accent-color);
 }
 .link-btn {
     background: none;
     border: none;
-    font-weight: 800;
     cursor: pointer;
     color: var(--accent-color);
 }
 
-.toolbar {
+.input-row {
     display: flex;
-    gap: 8px;
-    margin-bottom: 4px;
+    gap: 10px;
 }
-.icon-btn {
-    background: none;
-    border: none;
-    cursor: pointer;
-    font-size: 1.2rem;
-    padding: 4px;
+
+.chat-input {
+    flex: 1;
+    resize: none;
+    min-height: 40px;
+    max-height: 100px;
+    padding: 8px;
+    font-family: inherit;
+}
+
+.pending-images {
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    padding-bottom: 5px;
+}
+.pending-img-wrap {
+    position: relative;
+    width: 60px;
+    height: 60px;
+    flex-shrink: 0;
+}
+.pending-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border: 1px solid #ccc;
     border-radius: 4px;
 }
-.icon-btn:hover {
-    background: #eee;
+.remove-btn {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    background: red;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 16px;
+    height: 16px;
+    font-size: 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.mention-popup {
+    position: absolute;
+    bottom: 100%;
+    left: 10px;
+    background: white;
+    width: 200px;
+    max-height: 200px;
+    overflow-y: auto;
+    border: 2px solid black;
+    z-index: 100;
+}
+.mention-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+}
+.mention-item.active {
+    background: #e0f2fe;
+}
+.mention-item:hover {
+    background: #f0f9ff;
+}
+.tiny-avatar {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+}
+.mention-empty {
+    padding: 10px;
+    color: #888;
+    text-align: center;
+}
+
+.context-menu {
+    position: fixed;
+    z-index: 1000;
+    background: white;
+    min-width: 120px;
+    box-shadow: 2px 2px 5px rgba(0,0,0,0.2);
+}
+.menu-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid #eee;
+}
+.menu-item:hover {
+    background: #f5f5f5;
+}
+
+.pill {
+    display: inline-block;
+    padding: 1px 6px;
+    border: 1px solid #000;
+    font-size: 0.7rem;
+    margin-left: 5px;
+    background: #fff;
 }
 
 .at-tag {
     background: #fef3c7;
-    padding: 2px 6px;
-    border: 2px solid #000;
-    font-weight: 800;
-}
-
-.voice {
-    width: 220px;
-}
-
-.recall-text {
-    font-style: italic;
-    color: #666;
-}
-
-.loading {
-    text-align: center;
-    font-weight: 800;
-}
-
-.nb-button.ghost {
-    background: #fff;
-    color: #000;
+    padding: 0 4px;
+    border-radius: 4px;
+    font-weight: 500;
+    margin: 0 2px;
 }
 </style>

@@ -179,3 +179,25 @@ func (c *Client) GetImage(file string) (*ImageInfo, error) {
 	}
 	return &info, nil
 }
+
+// GetGroupMemberInfo gets group member info
+func (c *Client) GetGroupMemberInfo(groupID int64, userID int64) (*GroupMemberInfo, error) {
+	params := map[string]interface{}{
+		"group_id": groupID,
+		"user_id":  userID,
+	}
+
+	resp, err := c.Call("get_group_member_info", params)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.IsOK() {
+		return nil, fmt.Errorf("api error: %s", resp.Message)
+	}
+
+	var info GroupMemberInfo
+	if err := json.Unmarshal(resp.Data, &info); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+	return &info, nil
+}

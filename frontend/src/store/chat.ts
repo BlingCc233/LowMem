@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type { User, Group, Message, Session } from '../types'
 // @ts-ignore
-import { GetFriends, GetGroups, GetMessages, SendMessage, ForwardMessage, SearchMessages, MarkChatRead, GetSessions, GetOneBotMessage } from '../../wailsjs/go/backend/Backend'
+import { GetFriends, GetGroups, GetMessages, SendMessage, ForwardMessage, SearchMessages, MarkChatRead, GetSessions, GetOneBotMessage, GetGroupMemberInfo } from '../../wailsjs/go/backend/Backend'
 // @ts-ignore
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 
@@ -45,6 +45,8 @@ export const useChatStore = defineStore('chat', () => {
     const currentChat = ref<ChatRef>(null)
     const messages = ref<Message[]>([])
     const loadingMessages = ref(false)
+    const hasMoreMessages = ref(true) // Track if more history is available
+    const memberCache = ref<Record<string, any>>({}) // Cache for group member info: "groupID-userID" -> Info
     const searchResults = ref<Message[]>([])
     const referencedMessages = ref<Record<number, Message>>({})
     const sessions = ref<Record<string, Session>>({})
@@ -197,9 +199,14 @@ export const useChatStore = defineStore('chat', () => {
         loadingMessages.value = true
         messages.value = []
         searchResults.value = []
+        hasMoreMessages.value = true
         try {
-            const res = await GetMessages(id, isGroup)
+            // Initial load with offset 0
+            const res = await GetMessages(id, isGroup, 0)
             messages.value = (res as Message[]).reverse()
+            if ((res as Message[]).length < 50) {
+                hasMoreMessages.value = false
+            }
             await MarkChatRead(id, isGroup)
             markSessionRead(id, isGroup)
         } catch (e) {
@@ -207,6 +214,45 @@ export const useChatStore = defineStore('chat', () => {
         } finally {
             loadingMessages.value = false
         }
+    }
+
+    const loadHistory = async () => {
+        if (!currentChat.value || loadingMessages.value || !hasMoreMessages.value) return
+        loadingMessages.value = true
+        try {
+            const currentCount = messages.value.length
+            const res = await GetMessages(currentChat.value.id, currentChat.value.isGroup, currentCount)
+            const olderMessages = (res as Message[]).reverse()
+            if (olderMessages.length < 50) {
+                hasMoreMessages.value = false
+            }
+            if (olderMessages.length > 0) {
+                messages.value = [...olderMessages, ...messages.value]
+            }
+        } catch (e) {
+            console.error('Failed to load history', e)
+        } finally {
+            loadingMessages.value = false
+        }
+    }
+
+    const getMemberName = async (groupID: number, userID: number): Promise<string> => {
+        const key = `${groupID}-${userID}`
+        if (memberCache.value[key]) {
+            const info = memberCache.value[key]
+            return info.card || info.nickname || String(userID)
+        }
+        // Fetch
+        try {
+            const info = await GetGroupMemberInfo(groupID, userID)
+            if (info) {
+                memberCache.value[key] = info
+                return info.card || info.nickname || String(userID)
+            }
+        } catch (e) {
+            // console.warn('Failed to fetch member info', e)
+        }
+        return String(userID)
     }
 
     const belongsToCurrentChat = (msg: Message) => {
@@ -264,14 +310,49 @@ export const useChatStore = defineStore('chat', () => {
         return preview
     }
 
+    const getMemberNameSync = (groupID: number, userID: number): string => {
+        const key = `${groupID}-${userID}`
+        if (memberCache.value[key]) {
+            const info = memberCache.value[key]
+            return info.card || info.nickname || String(userID)
+        }
+        // Trigger fetch if not present (and not already fetching? add simple debounce if needed)
+        // We just fire and forget. When it updates, memberCache updates, and Vue should react if used in template.
+        getMemberName(groupID, userID)
+        return String(userID)
+    }
+
     const initListeners = () => {
+        EventsOn('LoginSuccess', (uid: number) => {
+            console.log('Login success, reloading data...', uid)
+            // Clear or refresh state if UID changed (simple approach: just reload)
+            loadContacts().then(() => {
+                initSessions()
+            })
+        })
+
         EventsOn('MessageReceived', (msg: Message) => {
             const isGroup = msg.message_type === 'group'
             const id = isGroup ? msg.group_id : (msg.is_send ? msg.target_id : msg.sender_id)
-            const name = isGroup ? `Group ${id}` : (msg.sender?.nickname || `User ${id}`)
-            const avatar = isGroup
-                ? `https://p.qlogo.cn/gh/${id}/${id}/640`
-                : msg.sender?.avatar_url || `https://q1.qlogo.cn/g?b=qq&nk=${id}&s=640`
+
+            // Fix Name Resolution: Don't rely on sender nickname for group chat title
+            let name = msg.sender?.nickname || `User ${id}`
+            let avatar = msg.sender?.avatar_url || `https://q1.qlogo.cn/g?b=qq&nk=${id}&s=640`
+
+            if (isGroup) {
+                // Find group name from cached groups
+                const grp = groups.value.find(g => g.group_id === id)
+                name = grp ? grp.group_name : `Group ${id}`
+                avatar = `https://p.qlogo.cn/gh/${id}/${id}/640`
+            } else {
+                // For private chat, use friend nickname if available
+                const friend = friends.value.find(f => f.user_id === id)
+                if (friend) {
+                    name = friend.nickname // or remark
+                    avatar = friend.avatar_url
+                }
+            }
+
             const preview = previewForMessage(msg)
             const increase = !msg.is_send && !belongsToCurrentChat(msg)
 
@@ -357,7 +438,11 @@ export const useChatStore = defineStore('chat', () => {
         forward,
         togglePin,
         isPinned,
-        clearSessionSearch,
+        clearSessionSearch: () => { sessionSearch.value = '' },
         fetchMessage,
+        loadHistory, // Exported
+        getMemberName, // Exported
+        getMemberNameSync, // Exported
+        hasMoreMessages,
     }
 })

@@ -10,12 +10,16 @@ export function GetFriends() {
   return window['go']['backend']['Backend']['GetFriends']();
 }
 
+export function GetGroupMemberInfo(arg1, arg2) {
+  return window['go']['backend']['Backend']['GetGroupMemberInfo'](arg1, arg2);
+}
+
 export function GetGroups() {
   return window['go']['backend']['Backend']['GetGroups']();
 }
 
-export function GetMessages(arg1, arg2) {
-  return window['go']['backend']['Backend']['GetMessages'](arg1, arg2);
+export function GetMessages(arg1, arg2, arg3) {
+  return window['go']['backend']['Backend']['GetMessages'](arg1, arg2, arg3);
 }
 
 export function GetOneBotMessage(arg1) {

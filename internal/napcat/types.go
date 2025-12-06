@@ -183,6 +183,25 @@ type ImageInfo struct {
 	Url      string `json:"url"`
 }
 
+// GroupMemberInfo represents group member info
+type GroupMemberInfo struct {
+	GroupID         int64  `json:"group_id"`
+	UserID          int64  `json:"user_id"`
+	Nickname        string `json:"nickname"`
+	Card            string `json:"card"`
+	Sex             string `json:"sex"`
+	Age             int    `json:"age"`
+	Area            string `json:"area"`
+	JoinTime        int32  `json:"join_time"`
+	LastSentTime    int32  `json:"last_sent_time"`
+	Level           string `json:"level"`
+	Role            string `json:"role"`
+	Unfriendly      bool   `json:"unfriendly"`
+	Title           string `json:"title"`
+	TitleExpireTime int32  `json:"title_expire_time"`
+	CardChangeable  bool   `json:"card_changeable"`
+}
+
 // DefaultConfig returns default configuration
 func DefaultConfig() Config {
 	return Config{
